@@ -1,0 +1,25 @@
+A (int socket) => ();
+
+B (int socket) => ();
+
+C (int socket) => ();
+
+D (int socket) => ();
+
+E (int socket) => ();
+
+F (int socket) => ();
+
+G () => ();
+
+source A => C;
+source B => D;
+
+C = E;
+D = F -> G;
+
+atomic C:{x};
+atomic E:{y,z};
+atomic D:{z};
+atomic F:{y};
+atomic G:{x};

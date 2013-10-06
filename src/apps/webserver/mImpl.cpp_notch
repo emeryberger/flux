@@ -1,0 +1,509 @@
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+#include <sys/stat.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <string.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <vector>
+#include <string>
+#include <iostream>
+#include "mImpl.h"
+
+#define BUFFER_SIZE 8192
+#define TIMEOUT 100
+#define ERR_READ -1
+#define ERR_WRITE -2
+
+using namespace std;
+
+int s;
+struct sockaddr_in server_addr;
+char *root;
+int root_len;
+
+fd_set read_fds;
+int fd_max;
+struct timeval select_timeout;
+
+int socket_in_use[1024];
+
+static std::vector <Listen_out *> *listen_outs = NULL;
+
+int 
+writeHeaders(int socket_in, bool close, int length, char *content);
+
+int suffixTest(char *val, char *suffix) {
+  int len = strlen(val);
+  int s_len = strlen(suffix);
+  int i;
+  
+  for (i=0;i<s_len;i++) {
+    if (val[len-i]!=suffix[s_len-i])
+      return 0;
+  }
+  return 1;
+}
+
+
+void returnSocket(int socket) {
+  socket_in_use[socket] = 0;
+}
+
+void closeSocket(int socket) {
+  close(socket);
+  if (socket > -1) {
+    if (socket < 1024)
+      socket_in_use[socket] = 2;
+    else 
+      printf("ERR, socket to large\n");
+  }
+}
+
+void init(int argc, char **argv) {
+  int old_flags;
+
+  //ignore broken pipes
+  signal(SIGPIPE, SIG_IGN);
+  
+  for (int i=0;i<1024;i++)
+    socket_in_use[i] = 2;
+
+  s = socket(AF_INET,SOCK_STREAM,0);
+  int val = 1;
+    if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val)) < 0)
+    {
+        perror("setsockopt: ");
+        exit(1);
+    }
+ 
+  if (argc < 3) {
+     fprintf (stderr, "Usage: %s <port-number> <root-dir>\n", argv[0]);
+     exit(1);
+  }
+
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_port = htons(atoi(argv[1]));
+  server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+  FD_ZERO(&read_fds);
+  FD_SET(s, &read_fds);
+  
+  root = argv[2];
+  root_len = strlen(root);
+    
+  if ((bind(s,(struct sockaddr*) &server_addr, sizeof(struct sockaddr))) < 0) {
+    perror("Bind: ");
+    //can't do anything usefull, exit
+    exit(1);
+  }
+  if (listen(s,50000)<0) {
+    perror("Listen : ");
+    //can't do anything usefull
+    exit(1);
+  }
+  if (server_addr.sin_addr.s_addr) {
+    fprintf (stderr, "listening on address %s, port %d\n",
+	     server_addr.sin_addr.s_addr, atoi(argv[1]));
+  } else {
+    fprintf (stderr, "listening on address (NULL), port %d\n",
+	     atoi(argv[1]));
+  }
+
+}
+
+int Reply (Reply_in *in) {
+  if (in->close) {
+    closeSocket(in->socket);
+  }
+  else 
+    returnSocket(in->socket);
+
+  return 0;
+}
+
+int ReadRequest (ReadRequest_in *in, ReadRequest_out *out) {
+  char buf[BUFFER_SIZE];
+  int rd; 
+  int totalread = 0;
+  int timeout = TIMEOUT;
+  string request;
+  out->request = 0;
+  out->close = false;
+
+  //DEBUG printf("ReadRequest in\n");
+  do {
+    //read 8k
+    rd = read(in->socket, buf, BUFFER_SIZE);
+    if (rd == -1) {
+      perror("Reading request");
+      closeSocket(in->socket);
+      return ERR_READ;
+    } 
+    else if (!rd) {
+      //need to add timeout
+      timeout--;
+      if (!timeout) {
+	//timeout
+	return 408;
+      }
+      usleep(1000*10);
+    }
+    else {
+      //append 8k to the buffer
+      request.append(buf, rd);
+      totalread += rd;
+    }  
+    //stop after header which ends with CRLFCRLF or after 8k
+  } while ((request.find("\r\n\r\n") == string::npos) && 
+	   (totalread <= BUFFER_SIZE));
+
+ 
+  int lstart = 0;
+  int lend = request.find_first_of("\r\n");
+
+  if (lend == string::npos) {
+    //Malformed request
+    //closeSocket(in->socket);
+    return 400;
+  }
+
+  //get the request
+  string line = request.substr(lstart, lend - lstart);
+ 
+  lstart = lend + 2;
+
+  //parse the request string
+
+  int delim1 = line.find_first_of(" ");
+
+  string method = line.substr(0, delim1);
+
+  if (method != "GET") 
+  {
+    //method not implemented 
+    return 501;
+  }
+  
+  int delim2 = line.find_last_of(" ");
+
+  /*
+    // this checks for HTTP version. For now commented out because 
+    // RFC 2616 requires complicated response if version is not supported
+  string version = line.substr(delim2 + 1);
+
+  if ((version != "HTTP/1.0") && (version != "HTTP/1.1")) {
+    //http version not supported
+    return 505;
+    } */
+
+  out->request = strdup(line.substr(delim1 + 1, delim2 - delim1 - 1).c_str());
+
+  if (! out->request) {
+    //bad request
+    return 400;
+  }
+
+  //parse other header lines
+
+  while ((lend = request.find_first_of("\r\n", lstart)) != string::npos) {
+    
+    line = request.substr(lstart, lend - lstart);
+    
+    //check for Connection: close
+
+    if (line.find("Connection: close") != string::npos)
+      out->close = true;
+
+    lstart = lend + 2;
+  }
+
+  out->socket = in->socket;
+  // DEBUG printf("Request:%s:\n", out->request);
+  return 0;
+}
+
+int ReadWrite (ReadWrite_in *in, ReadWrite_out *out) {
+  FILE *f;
+  int rd;
+  struct stat sb;
+  int res;
+  char file_name[1024];
+	       
+  out->socket = in->socket;
+  out->close = in->close;
+  snprintf(file_name, 1024, "%s/%s", root, in->file);
+
+  res = stat(file_name, &sb);
+
+  //insert directory checking here
+  if (S_ISDIR(sb.st_mode)) {
+    sprintf(file_name, "%s/%s/index.html", root, in->file);
+    //printf("Looking for:%s:\n", file_name);
+    res = stat(file_name, &sb);
+  }
+  
+  int file_size = sb.st_size;
+
+  if (res < 0) {
+    return 404;
+  }
+  else {
+    int ix=0;
+    char *ptr;
+    int header_len;
+    
+    if (suffixTest(file_name, ".html")) {
+      out->content = "text/html";
+    }
+    else if (suffixTest(file_name, ".png")) {
+      out->content = "image/png";
+    }
+    else if (suffixTest(file_name, ".jpg") || suffixTest(in->file, ".jpeg")) {
+      out->content = "image/jpeg";
+    }
+    else if (suffixTest(file_name, ".gif")) {
+      out->content = "image/gif";
+    }
+    else if (suffixTest(file_name, ".pdf")) {
+      out->content = "application/pdf";
+    }
+    else if (suffixTest(file_name, ".torrent")) {
+      out->content = "application/x-bittorrent";
+    }
+    else {
+      out->content = "text/plain";
+    }
+    
+    char hdrs[BUFFER_SIZE];
+
+    char *msg = "HTTP/1.1 200 OK\r\n";
+   
+    if (write(in->socket, msg, strlen(msg)) == -1) {
+      //error writing to the socket, we're done here
+      return ERR_WRITE;
+    }
+    
+    if (writeHeaders(in->socket, false, file_size, out->content) == ERR_WRITE)
+      return ERR_WRITE;
+
+    int fd = open(file_name, O_RDONLY);
+    if (fd < 0) {
+      perror("Reading");
+      in->close = 1;
+      return ERR_READ;
+    }
+
+    char *pos;
+    do {
+      if ((rd = read(fd, hdrs, 8192)) < 0) {
+	perror("read");
+	in->close = 1;
+	return ERR_READ;
+      }
+      ix += rd;
+      pos = hdrs;
+      while (rd > 0) {
+	int ret = write(in->socket, hdrs, rd);
+	if (ret < 0) {
+	  perror("write");
+	  in->close = 1;
+	  close(fd);
+	  return ERR_WRITE;
+	}
+	else if (ret == 0) {
+	  rd = 0;
+	  break;
+	}
+	else {
+	  pos += ret;
+	  rd -= ret;
+	}
+      }
+    } while (ix < sb.st_size);
+    close(fd);
+  }
+  return 0;
+}
+
+int Listen (Listen_out *out)
+{
+    if (listen_outs == NULL)
+    {
+      //printf("creating new vector...\n");
+        listen_outs = new std::vector<Listen_out *>;
+    }
+
+    int max; 
+    select_timeout.tv_sec = 0;
+    select_timeout.tv_usec = 10*1000; // Half a second
+
+    FD_ZERO(&read_fds);
+    FD_SET(s, &read_fds);
+    max = s;
+
+    for (int i=0;i<1024;i++) 
+    {
+        if (socket_in_use[i]==0) 
+        {
+            if (i > max)
+                max = i;
+            FD_SET(i, &read_fds);
+        }
+    }
+
+    int sel=0;
+    int ix = 0;
+
+    Listen_out *var;
+    if (listen_outs->size() > 0)
+    {
+        int size = listen_outs->size();
+        var = (Listen_out *)listen_outs->at(size-1);
+        listen_outs->pop_back();
+        out->socket = var->socket;
+    }
+    else
+    {
+        if ((sel=select(max+1, &read_fds, NULL, NULL, &select_timeout)) > 0)
+        //if ((sel=select(max+1, &read_fds, NULL, NULL, NULL)) > 0)
+        {
+            int sock;
+            if (FD_ISSET(s, &read_fds))
+            {
+                socklen_t length =  sizeof(struct sockaddr);
+                sock = accept(s, (struct sockaddr *)&server_addr,&length);
+                int optval = 1;
+                if (setsockopt (sock, IPPROTO_TCP, TCP_NODELAY, &optval, sizeof (optval)) < 0)
+                {
+                    perror("setsockopt");
+                }
+                var = new Listen_out();
+                var->socket = sock;
+                listen_outs->push_back(var);
+                ix++;
+                socket_in_use[sock] = 1;
+            }
+            for (int i=0;i<1024;i++)
+            {
+                if (socket_in_use[i] == 0)
+                {
+                    if (FD_ISSET(i, &read_fds))
+                    {
+                        var = new Listen_out();
+                        var->socket = i;
+                        listen_outs->push_back(var);
+                        ix++;
+                        FD_CLR(i, &read_fds);
+                        socket_in_use[i] = 1;
+                    }
+                }
+            }
+            int size = listen_outs->size();
+            var = (Listen_out *)listen_outs->at(size-1);
+            listen_outs->pop_back();
+            out->socket = var->socket;
+        }
+        else
+        {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int 
+writeHeaders(int socket_in, bool close, int length, char *content) {
+  char msg[128];
+  
+  sprintf(msg, "Content-Length: %d\r\n", length);
+  
+  if (write(socket_in, msg, strlen(msg)) == -1) 
+    return ERR_WRITE;
+  
+  sprintf(msg, "Server: Flux 0.1\r\n");
+  
+  if (write(socket_in, msg, strlen(msg)) == -1) 
+    return ERR_WRITE;
+  
+  sprintf(msg, "Content-Type: %s\r\n", content);
+  
+  if (write(socket_in, msg, strlen(msg)) == -1) 
+    return ERR_WRITE;
+
+  if (close)
+    if (write(socket_in, "Connection: close\r\n",19) == -1) 
+      return ERR_WRITE; 
+  
+  if (write(socket_in, "\r\n", 2) == -1) 
+    return ERR_WRITE;
+}
+
+void FourOhFor(ReadWrite_in *in, int err) {
+
+  //  printf("In FourOhFour\n");
+    
+  if (err == 404) {
+    char *msg = "HTTP/1.1 404 File Not Found\r\n";
+    if (write(in->socket, msg, strlen(msg)) != -1) {    
+      msg = "<html><body><h2>404 File Not Found!</h2></body></html>\n";
+      if (writeHeaders(in->socket, in->close, strlen(msg), "text/html") != ERR_WRITE)
+	write(in->socket, msg, strlen(msg));
+    }
+  }
+  //printf("I am going to close the socket!\n");
+  if (in->close)
+    closeSocket(in->socket);
+  else
+    returnSocket(in->socket);
+  // printf("I'm done FourOhFouring\n");
+}
+
+int SessionId(Page_in *in) {
+  return in->socket;
+}
+
+void BadRequest(ReadRequest_in *in, int err) {
+  char *msg;
+
+  switch (err) {
+
+  case 400:
+    msg = "HTTP/1.1 400 Bad Request\r\n";
+    if (write(in->socket, msg, strlen(msg)) != -1) {
+      msg = "<html><body><h2>400 Bad Request!</h2></body></html>\n";
+      if (writeHeaders(in->socket, true, strlen(msg), "text/html") != ERR_WRITE)
+	write(in->socket, msg, strlen(msg));
+    }
+    break;
+
+  case 501:   
+    msg = "HTTP/1.1 501 Not Implemted\r\n";
+    if (write(in->socket, msg, strlen(msg)) != -1) {
+      msg = "<html><body><h2>501 Not Implemented!</h2></body></html>\n";
+      if (writeHeaders(in->socket, true, strlen(msg), "text/html") != ERR_WRITE)
+	write(in->socket, msg, strlen(msg));
+    }
+    break;
+
+  case 408:
+    msg = "HTTP/1.1 408 Request Timeout\r\n";
+    if (write(in->socket, msg, strlen(msg)) != -1) {
+      msg = "<html><body><h2>408 Request Timeout!</h2></body></html>\n";
+      if (writeHeaders(in->socket, true, strlen(msg), "text/html") != ERR_WRITE)
+	write(in->socket, msg, strlen(msg));
+    }
+    break;
+  } 
+  
+  closeSocket(in->socket);
+  
+}

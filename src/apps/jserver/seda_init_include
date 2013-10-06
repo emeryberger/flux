@@ -1,0 +1,2 @@
+ServerConfig.setRoot(config.getString("rootDir"));
+ServerConfig.setPort(config.getInt("httpPort"));

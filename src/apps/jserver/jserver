@@ -1,0 +1,28 @@
+source Listen;
+
+typedef xml TestXML;
+typedef html TestHTML;
+
+Listen () => (Socket socket);
+
+Page (Socket socket) => ();
+
+ReadRequest (Socket socket) => (Socket socket, String request);
+
+Handler[_,_] (Socket socket, String request)
+     => (Socket socket, int length, String content, String output);
+
+Reply (Socket socket, int length, String content, String output) => ();
+
+XSLT (Socket socket, int length, String content, String file)
+     => (Socket socket, int length, String content, String output);
+
+Cache (Socket socket, String file)
+     => (Socket socket, int length, String content, String output);
+
+Handler:[_, xml] = Cache -> XSLT;
+Handler:[_, _] = Cache;
+
+Page = ReadRequest -> Handler -> Reply;
+
+

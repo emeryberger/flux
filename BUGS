@@ -1,0 +1,5 @@
+Compiler generates stubs for abstract nodes
+Compiler doesn't generate errors for errror handlers for abstract nodes
+Compiler shouldn't allow old obsolete concurrency constraints.
+Eliminate mayblock from language
+edu.umass.cs.flux.Main crashes if no server type is specified.

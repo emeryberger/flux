@@ -1,0 +1,21 @@
+typedef xml TestXML;
+typedef html TestHTML;
+
+Listen () => (Socket socket);
+
+Page (SocketChannel socket) => ();
+
+ReadRequest (SocketChannel socket) => 
+	    (SocketChannel socket, boolean close, String request);
+
+Reply (SocketChannel socket, boolean close) => ();
+
+ReadWrite (SocketChannel socket, boolean close, String file)
+     => (SocketChannel socket, boolean close);
+
+source Listen => Page;
+
+Page = ReadRequest -> ReadWrite -> Reply;
+
+handle error ReadWrite => FourOhFor;
+

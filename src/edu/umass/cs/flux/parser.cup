@@ -1,0 +1,202 @@
+package edu.umass.cs.flux;
+
+import java.util.Vector;
+import java.io.FileInputStream;
+import java.io.PrintWriter;
+import java.io.OutputStreamWriter;
+import java_cup.runtime.*;
+
+import jdsl.graph.api.*;
+import jdsl.graph.ref.*;
+
+parser code {:
+       	public void syntax_error(Symbol cur) {
+       	      System.err.println("Syntax error at line: "+
+	      				 ((Yylex)getScanner()).getLine());
+	}
+	public static void main(String[] args) {
+	 System.err.println("This is no longer the generating routine.");
+        }
+:}
+
+terminal ATOMIC;
+terminal ARROW, STAR, EXCLAMATION;
+terminal LEFT_CR_BRACE, RIGHT_CR_BRACE;
+terminal PIPE, COLON, COMMA, EQUALS, SEMI;
+terminal LEFT_PAREN, RIGHT_PAREN, LEFT_SQ_BRACE, RIGHT_SQ_BRACE;
+terminal TYPEDEF, SOURCEDEF;
+terminal PLUS, QUESTION;
+terminal Integer NUMBER;
+terminal String IDENTIFIER;
+terminal HANDLE, ERROR;
+terminal String PROGRAM;
+terminal String SESSION;
+
+non terminal Program program;
+
+non terminal String session_id;
+non terminal Source main_fn;
+non terminal Vector main_fn_list;
+
+non terminal Vector type_list;
+non terminal TypeDeclaration type;
+
+non terminal Vector decl_list;
+non terminal TaskDeclaration decl;
+non terminal Vector arg_list;
+non terminal Vector comma_list;
+
+non terminal Vector expr_list;
+non terminal FlowStatement expr_part; 
+non terminal FlowStatement assn;
+non terminal Vector typed_list;
+non terminal Vector ident_list;
+non terminal Object ident;
+
+non terminal Vector err_list;
+non terminal ErrorHandler err_def;
+
+non terminal Integer atomic_qualifier;
+non terminal Integer atomic_type;
+non terminal Integer atomic_scope;
+non terminal Vector lock_list;
+non terminal AtomicDeclaration atomic_def;
+non terminal Vector atom_list;
+
+/*------------------------------------------------------------------
+ The main program:
+     Main
+     Types 
+     Declarations 
+     Expressions
+-------------------------------------------------------------------*/
+
+program ::= 
+        type_list:types decl_list:decs main_fn_list:ml expr_list:exps atom_list:atoms err_list:errs
+	{: RESULT = new Program(ml, types, decs, exps, atoms, errs); :}
+	| error
+	;
+
+/*-------------------------------------------------------------------#
+# Main function
+#-------------------------------------------------------------------*/
+main_fn_list ::= main_fn_list:l main_fn:m
+	     {: l.add(m); RESULT=l; :}
+	     | main_fn:m
+	     {: RESULT = new Vector<Source>(); RESULT.add(m); :}
+	     ;
+
+session_id ::= LEFT_CR_BRACE SESSION COLON IDENTIFIER:i RIGHT_CR_BRACE 
+		{: RESULT=i; :} 
+	| {: RESULT=null; :}
+	;
+
+main_fn ::= SOURCEDEF IDENTIFIER:i session_id:s ARROW IDENTIFIER:d SEMI
+	{: RESULT = (s==null)?(new Source(i, d)):(new Source(i,s,d)); :} 
+	; 
+
+/*-------------------------------------------------------------------#
+# Declarations
+#-------------------------------------------------------------------*/
+decl_list ::= decl_list:l decl:p
+	  {: l.add(p); RESULT=l; :}
+	  | decl:p
+	  {: Vector<TaskDeclaration> v = new Vector<TaskDeclaration>(); v.add(p); RESULT=v; :}
+	  ;
+
+decl ::= IDENTIFIER:i arg_list:in ARROW arg_list:out SEMI
+     {: RESULT = new TaskDeclaration(in, i, out); :}
+	;
+
+arg_list ::= LEFT_PAREN typed_list:l RIGHT_PAREN {: RESULT=l; :}
+	 | LEFT_PAREN RIGHT_PAREN {: RESULT=new Vector<Argument>(); :}
+	 ;
+
+typed_list ::= typed_list:l COMMA IDENTIFIER:t IDENTIFIER:i 
+	   {: l.add(new Argument(t,i)); RESULT=l; :}
+	 | IDENTIFIER:t IDENTIFIER:i 
+	   {: Vector<Argument> v=new Vector<Argument>(); v.add(new Argument(t,i)); RESULT=v; :}
+	 ;
+
+/*-------------------------------------------------------------------#
+#Types
+#-------------------------------------------------------------------*/
+type_list ::= type_list:tl type:t
+	  {: tl.add(t); RESULT=tl; :}
+	  |
+	  {: Vector<TypeDeclaration> v = new Vector<TypeDeclaration>(); RESULT=v; :}
+	  ;
+
+type ::= TYPEDEF IDENTIFIER:name IDENTIFIER:fn SEMI
+     {: RESULT = new TypeDeclaration(name, fn); :}
+	;
+
+/*-------------------------------------------------------------------#
+# Expressions
+#-------------------------------------------------------------------*/
+
+expr_list ::= expr_list:l expr_part:p 
+	  {: l.add(p); RESULT=l; :}
+	  | expr_part:p
+	  {: Vector<FlowStatement> v = new Vector<FlowStatement>(); v.add(p); RESULT=v; :}
+	  ;
+
+expr_part ::= assn:e {: RESULT=e; :} SEMI;
+
+assn     ::= IDENTIFIER:i EQUALS ident_list:l 
+	     		  {: RESULT=new SimpleFlowStatement(i, l); :}
+  | IDENTIFIER:i COLON LEFT_SQ_BRACE comma_list:t RIGHT_SQ_BRACE EQUALS ident_list:l
+		   	  {: RESULT=new SimpleFlowStatement(i, t, l);:}
+	;
+
+ident_list ::= ident_list:l PIPE ident:id {: l.add(id); RESULT=l; :}
+	   | ident:id {: Vector v = new Vector(); v.add(id); RESULT=v; :}
+       | {: Vector v = new Vector(); RESULT=v; :}
+	   ;
+ident ::= IDENTIFIER:i {: RESULT=i; :}
+      | LEFT_PAREN ident_list:l RIGHT_PAREN {: RESULT=l; :}
+      ;
+
+comma_list ::= comma_list:l COMMA IDENTIFIER:i 
+	   {: l.add(i); RESULT=l; :}
+	 | comma_list:l COMMA STAR {: l.add("*"); RESULT=l; :}
+	 | STAR {: RESULT = new Vector(); RESULT.add("*"); :}
+	 | IDENTIFIER:i {: RESULT=new Vector(); RESULT.add(i); :}
+	 ;
+
+
+err_def ::= HANDLE ERROR ident_list:l ARROW IDENTIFIER:i SEMI
+	  {: RESULT = new ErrorHandler(l, i); :}
+	;
+
+err_list ::= err_list:l err_def:d {: l.add(d); RESULT=l; :}
+	  | {: RESULT = new Vector(); :}
+	  ;
+
+atomic_type ::= QUESTION {: RESULT=new Integer(Lock.READER); :} 
+	| EXCLAMATION {: RESULT=new Integer(Lock.WRITER); :}
+	;
+
+atomic_scope ::=  PROGRAM {: RESULT=new Integer(Lock.PROGRAM); :}
+	| SESSION {: RESULT=new Integer(Lock.SESSION); :}
+	;
+
+atomic_qualifier ::= atomic_type:at LEFT_PAREN atomic_scope:as RIGHT_PAREN
+		{: RESULT=new Integer(at.intValue()|as.intValue()); :}
+	| atomic_type:at {: RESULT=at; :}
+	| LEFT_PAREN atomic_scope:as RIGHT_PAREN {: RESULT=as; :}
+	| {: RESULT=new Integer(Lock.WRITER | Lock.PROGRAM); :};
+
+lock_list ::= IDENTIFIER:lock atomic_qualifier:aq 
+	{: RESULT = new Vector<Lock>(); 
+	   ((Vector)RESULT).add(new Lock(lock,aq)); :}
+	| IDENTIFIER:lock atomic_qualifier:aq COMMA lock_list:l
+	{: l.add(new Lock(lock, aq)); RESULT = l; :}	
+	;
+atomic_def ::= 
+	   ATOMIC IDENTIFIER:i COLON LEFT_CR_BRACE lock_list:ll RIGHT_CR_BRACE SEMI
+		{: RESULT = new AtomicDeclaration(i, ll); :}
+	 ;
+atom_list ::= atom_list:l atomic_def:a {: l.add(a); RESULT=l; :}
+	  | {: RESULT = new Vector(); :}
+	  ;

@@ -1,0 +1,29 @@
+typedef foo Foo;
+
+A (int socket) => ();
+
+B (int socket) => ();
+
+C (int socket) => ();
+
+D (int socket) => ();
+
+E (int socket) => ();
+
+F (int socket) => ();
+
+G () => ();
+
+H (int socket) => ();
+source A => C;
+source B => D;
+
+C = E;
+D:[foo] = F -> G;
+D:[*] = H;
+
+atomic C:{x};
+atomic E:{y,z};
+atomic D:{z};
+atomic F:{y};
+atomic G:{x};

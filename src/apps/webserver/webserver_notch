@@ -1,0 +1,18 @@
+Page (int socket) => ();
+
+ReadRequest (int socket) => (int socket, bool close, char* request);
+
+Reply (int socket, bool close, int length, char* content, char* output) => ();
+
+ReadWrite (int socket, bool close, char* file)
+     => (int socket, bool close, int length, char* content, char* output);
+
+Listen () => (int socket);
+
+source Listen => Page;
+
+Page = ReadRequest -> ReadWrite -> Reply;
+
+handle error ReadWrite => FourOhFor;
+
+handle error ReadRequest => BadRequest;

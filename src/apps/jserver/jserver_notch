@@ -1,0 +1,20 @@
+Page (SocketChannel s) => ();
+
+ReadRequest (SocketChannel s) => (SocketChannel s, boolean close, String request);
+
+Reply (SocketChannel s, boolean close, int length, String content, String output) 
+	=> ();
+
+ReadWrite (SocketChannel s, boolean close, String file)
+     => (SocketChannel s, boolean close, int length, String content, String output);
+
+
+Listen () => (SocketChannel s);
+
+source Listen => Page;
+
+Page = ReadRequest -> ReadWrite -> Reply;
+
+handle error ReadWrite => FourOhFor;
+
+handle error ReadRequest => BadRequest;
